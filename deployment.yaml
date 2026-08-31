@@ -15,6 +15,13 @@ spec:
       labels:
         app: hello-app
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway                
+          labelSelector:
+            matchLabels:
+              app: hello-app
       containers:
         - name: hello-app
           image: nginxdemos/hello:latest
