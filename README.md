@@ -11,3 +11,9 @@
   temporarily exceed the skew limit, the new pod stayed Pending indefinitely.
   Switched to whenUnsatisfiable: ScheduleAnyway — tolerates the rollout's temporary
   imbalance while still preferring even distribution, self-corrects once surge resolves.
+- Port 80 was already bound by Docker Desktop's own processes (com.docker.backend.exe,
+  wslrelay.exe) on Windows/WSL2 — remapped kind's extraPortMappings to 8080/8443 instead
+  of fighting the OS-level conflict
+- Observed ingress-nginx-controller scheduling is non-deterministic between control-plane
+  and worker nodes — the kind manifest only tolerates the control-plane taint, it doesn't
+  force placement there
