@@ -17,3 +17,33 @@
 - Observed ingress-nginx-controller scheduling is non-deterministic between control-plane
   and worker nodes — the kind manifest only tolerates the control-plane taint, it doesn't
   force placement there
+
+## Setup
+
+1. Create the cluster (default CNI disabled — required for NetworkPolicy support):
+   kind create cluster --name devops-lab --config kind-config.yaml
+
+2. Install Calico CNI (kind's default `kindnet` does NOT enforce NetworkPolicy):
+   kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.0/manifests/calico.yaml
+   kubectl get nodes -w   # wait for all nodes Ready
+
+3. Deploy the app stack:
+   kubectl create namespace lab-app
+   kubectl apply -f deployment.yaml
+   kubectl apply -f service.yaml
+   kubectl apply -f hpa.yaml
+
+4. Install Ingress controller (pinned to control-plane node — see incident notes):
+   kubectl apply -f ingress-nginx-controller.yaml
+   kubectl apply -f ingress.yaml
+
+5. Apply NetworkPolicy (requires step 2 — Calico):
+   kubectl apply -f networkpolicy.yaml
+
+6. Verify:
+   curl http://localhost:8080 -H "Host: hello-app.local"
+
+## Notes
+- Host port 8080/8443 used instead of 80/443 — Docker Desktop on Windows/WSL2
+  binds 80 internally (com.docker.backend.exe, wslrelay.exe)
+- NetworkPolicy requires Calico — default kindnet CNI silently no-ops NetworkPolicy objects
