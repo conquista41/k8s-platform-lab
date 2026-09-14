@@ -1,0 +1,56 @@
+replicaCount: 3
+
+image:
+  repository: nginxdemos/hello
+  tag: latest
+  pullPolicy: IfNotPresent
+
+namespace: lab-app
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+probes:
+  liveness:
+    path: /
+    port: 80
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /
+    port: 80
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    failureThreshold: 3
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  host: hello-app.local
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 50
+
+networkPolicy:
+  enabled: true
+  allowedNamespace: ingress-nginx
+
+topologySpread:
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway

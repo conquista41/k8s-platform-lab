@@ -18,22 +18,23 @@ spec:
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway                
+          whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
               app: hello-app
       containers:
         - name: hello-app
-          image: nginxdemos/hello:latest
+          image: "nginxdemos/hello:latest"
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
           resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
             limits:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
           livenessProbe:
             httpGet:
               path: /

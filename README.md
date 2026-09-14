@@ -17,6 +17,21 @@
 - Observed ingress-nginx-controller scheduling is non-deterministic between control-plane
   and worker nodes — the kind manifest only tolerates the control-plane taint, it doesn't
   force placement there
+- Migrated raw manifests to a Helm chart (hello-app) as the final Faz 2 step:
+  values.yaml now drives replicas, image, resources, probes, ingress host,
+  HPA thresholds, and NetworkPolicy scope — no more hardcoded YAML
+- Hit a chart-breaking bug: helm create's default NOTES.txt referenced
+  .Values.httpRoute.enabled (Gateway API scaffold), which isn't defined in
+  our values.yaml -> nil pointer error on `helm lint`. Rewrote NOTES.txt to
+  match our actual Ingress-based setup and dropped the unused httproute.yaml
+  template (Gateway API is out of scope for this phase)
+- Learned the toYaml/nindent pattern for templatizing resource blocks: `with`
+  changes template context to `.`, `toYaml` serializes the values.yaml map,
+  `nindent N` re-indents it under the parent key without manual newline math
+- Verified the migration didn't break anything: deleted the manually
+  kubectl-applied resources, ran `helm install`, confirmed all objects came
+  up under `app.kubernetes.io/managed-by: Helm`, and re-ran the curl test
+  through ingress-nginx successfully
 
 ## Setup
 
@@ -27,23 +42,32 @@
    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.0/manifests/calico.yaml
    kubectl get nodes -w   # wait for all nodes Ready
 
-3. Deploy the app stack:
-   kubectl create namespace lab-app
-   kubectl apply -f deployment.yaml
-   kubectl apply -f service.yaml
-   kubectl apply -f hpa.yaml
-
-4. Install Ingress controller (pinned to control-plane node — see incident notes):
+3. Install the Ingress controller (pinned to control-plane node — see incident notes):
    kubectl apply -f ingress-nginx-controller.yaml
-   kubectl apply -f ingress.yaml
 
-5. Apply NetworkPolicy (requires step 2 — Calico):
-   kubectl apply -f networkpolicy.yaml
+4. Deploy the app stack via Helm (deployment, service, HPA, ingress, and
+   NetworkPolicy are all templated in this chart — see hello-app/values.yaml):
+   helm install hello-app ./hello-app --namespace lab-app --create-namespace
 
-6. Verify:
+5. Verify:
+   helm status hello-app -n lab-app
+   kubectl get all -n lab-app
    curl http://localhost:8080 -H "Host: hello-app.local"
+
+### Upgrading / changing config
+   # edit hello-app/values.yaml, then:
+   helm upgrade hello-app ./hello-app -n lab-app
+
+### Uninstalling
+   helm uninstall hello-app -n lab-app
+
 
 ## Notes
 - Host port 8080/8443 used instead of 80/443 — Docker Desktop on Windows/WSL2
   binds 80 internally (com.docker.backend.exe, wslrelay.exe)
 - NetworkPolicy requires Calico — default kindnet CNI silently no-ops NetworkPolicy objects
+- App stack (deployment/service/hpa/ingress/networkpolicy) is Helm-managed as of
+  this commit — don't `kubectl apply` the files under legacy-manifests/, they'll
+  conflict with Helm's ownership of those resources
+- Ingress controller itself is still raw-applied (kubectl), not part of the
+  Helm chart — it's cluster infrastructure, not application config

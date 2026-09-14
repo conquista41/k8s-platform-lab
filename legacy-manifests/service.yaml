@@ -5,11 +5,8 @@ metadata:
   namespace: lab-app
 spec:
   type: ClusterIP
-
-
   selector:
     app: hello-app
-
   ports:
     - port: 80
       targetPort: 80
