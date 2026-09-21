@@ -96,7 +96,7 @@
 
 1. Provision infrastructure (VPC, EKS cluster, managed node group, IAM, addons):
    cd terraform
-   terraform init
+   terraform init -backend-config=backend.hcl
    terraform plan
    terraform apply
 
