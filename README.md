@@ -32,8 +32,39 @@
   kubectl-applied resources, ran `helm install`, confirmed all objects came
   up under `app.kubernetes.io/managed-by: Helm`, and re-ran the curl test
   through ingress-nginx successfully
+- Provisioned AWS EKS with Terraform: S3 backend using native Terraform 1.10+
+  locking (`use_lockfile = true`, no DynamoDB), separate `modules/vpc` and
+  `modules/eks`, 2 public + 2 private subnets across 2 AZs, worker nodes in
+  private subnets, single NAT Gateway (explicit cost trade-off vs. per-AZ NAT),
+  EKS managed node group (t3.medium x2) instead of self-managed/Fargate
+- Enabled NetworkPolicy enforcement via the VPC CNI's native support instead of
+  installing Calico (`configuration_values = { enableNetworkPolicy = "true" }`
+  on the `vpc-cni` addon) — the addon's config schema key is `enableNetworkPolicy`
+  at the top level, not `env.ENABLE_NETWORK_POLICY` as some docs/examples suggest.
+  Also had to pin a recent `addon_version`, since the account's default vpc-cni
+  version predated this config option and rejected it with a schema validation error
+- Kept the infra/app split from kind: Terraform provisions only infrastructure
+  (VPC, EKS, node group, IAM, addons); `ingress-nginx` and the `hello-app` Helm
+  chart are installed separately via `helm install`, same as on kind
+- Hit an AWS account-level restriction blocking all Elastic Load Balancer creation
+  (`OperationNotPermitted: This AWS account currently does not support creating
+  load balancers`) — unrelated to Terraform/K8s config, requires an AWS Support
+  case to lift. Worked around it for verification by setting the ingress-nginx
+  Service to `ClusterIP` and using `kubectl port-forward`, which tunnels through
+  the EKS API server rather than needing a direct network path — enough to
+  validate the full Ingress → Service → Pod chain without a public LB
+- Learned that the EKS Console's "Resources" tab uses a separate authorization
+  layer (Access Entries), independent of `kubectl`'s access path (which works via
+  the classic cluster-creator grant). Needed
+  `aws eks update-cluster-config --access-config authenticationMode=API_AND_CONFIG_MAP`
+  plus an explicit access entry + `AmazonEKSClusterAdminPolicy` association to
+  unlock it. Also: the AWS root user is a distinct IAM principal from an IAM
+  user for this purpose — console access has to be granted to whichever identity
+  is actually logged in, not just "the account"
 
 ## Setup
+
+### Local (kind)
 
 1. Create the cluster (default CNI disabled — required for NetworkPolicy support):
    kind create cluster --name devops-lab --config kind-config.yaml
@@ -54,31 +85,61 @@
    kubectl get all -n lab-app
    curl http://localhost:8080 -H "Host: hello-app.local"
 
-### Upgrading / changing config
+#### Upgrading / changing config
    # edit hello-app/values.yaml, then:
    helm upgrade hello-app ./hello-app -n lab-app
 
-### Uninstalling
+#### Uninstalling
    helm uninstall hello-app -n lab-app
 
-## Provisioning AWS EKS with Terraform
-- State: S3 backend with native Terraform 1.10+ locking (`use_lockfile = true`), no DynamoDB table needed.
-- Module structure: separate `modules/vpc` and `modules/eks`, composed from a root `main.tf`.
-- Networking: 2 public + 2 private subnets across 2 AZs, worker nodes in private subnets, single NAT Gateway (cost trade-off — one NAT instead of per-AZ).
-- EKS managed node group (t3.medium x2) instead of self-managed nodes or Fargate.
-- NetworkPolicy enforcement via the VPC CNI's native support (`configuration_values = { enableNetworkPolicy = "true" }` on the `vpc-cni` addon) instead of installing Calico — but note the addon's config schema key is `enableNetworkPolicy` at the top level, **not** `env.ENABLE_NETWORK_POLICY` as older docs/examples suggest; also required pinning a recent `addon_version` since the account's default vpc-cni version predated the option entirely.
-- Infra/app split: Terraform provisions only infrastructure (VPC, EKS, node group, IAM, addons). `ingress-nginx` and the `hello-app` Helm chart are installed separately via `helm install`, same as on kind.
-- Hit an AWS account-level restriction blocking all Elastic Load Balancer creation (`OperationNotPermitted: This AWS account currently does not support creating load balancers`) — unrelated to Terraform/K8s config, needs an AWS Support case to lift. Worked around it for verification by setting the ingress-nginx Service to `ClusterIP` and using `kubectl port-forward` (tunnels through the EKS API server, not a direct network path — no LB required to validate the Ingress → Service → Pod chain).
-- EKS Console's "Resources" tab uses a separate authorization layer (Access Entries), independent of `kubectl`'s access (which works via the classic cluster-creator grant). Needed `aws eks update-cluster-config --access-config authenticationMode=API_AND_CONFIG_MAP` plus an explicit access entry + `AmazonEKSClusterAdminPolicy` association to unlock it. Also: the AWS root user is a different IAM principal from an IAM user for this purpose — console access must be granted to whichever identity is actually logged in.
-- Full stack verified end-to-end on real EKS infra: 2 nodes Ready, ingress-nginx + hello-app deployed via Helm, `curl -H "Host: hello-app.local"` returning 200 through the ingress controller.
+### AWS EKS
+
+1. Provision infrastructure (VPC, EKS cluster, managed node group, IAM, addons):
+   cd terraform
+   terraform init
+   terraform plan
+   terraform apply
+
+2. Point kubectl at the new cluster:
+   aws eks update-kubeconfig --region us-east-1 --name k8s-platform-lab
+   kubectl get nodes   # expect 2 nodes Ready
+
+3. Install ingress-nginx (ClusterIP — see Notes on the LoadBalancer restriction):
+   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+   helm repo update
+   helm install ingress-nginx ingress-nginx/ingress-nginx \
+     --namespace ingress-nginx --create-namespace \
+     --set controller.service.type=ClusterIP
+
+4. Deploy the app stack (same chart as kind):
+   helm install hello-app ./hello-app --namespace lab-app --create-namespace
+
+5. Verify (no public LB — tunnel through the EKS API server instead):
+   kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
+   # in a second terminal:
+   curl -H "Host: hello-app.local" http://localhost:8080/
+
+6. Tear down (uninstall Helm releases first so nothing orphans outside Terraform state):
+   helm uninstall hello-app -n lab-app
+   helm uninstall ingress-nginx -n ingress-nginx
+   cd terraform
+   terraform destroy
 
 ## Notes
 - Host port 8080/8443 used instead of 80/443 — Docker Desktop on Windows/WSL2
   binds 80 internally (com.docker.backend.exe, wslrelay.exe)
-- NetworkPolicy requires Calico — default kindnet CNI silently no-ops NetworkPolicy objects
+- NetworkPolicy requires Calico on kind — default kindnet CNI silently no-ops
+  NetworkPolicy objects. On EKS, NetworkPolicy is enforced via the VPC CNI's
+  native support instead (see Learnings)
 - App stack (deployment/service/hpa/ingress/networkpolicy) is Helm-managed as of
   this commit — don't `kubectl apply` the files under legacy-manifests/, they'll
   conflict with Helm's ownership of those resources
-- Ingress controller itself is still raw-applied (kubectl), not part of the
-  Helm chart — it's cluster infrastructure, not application config
-
+- Ingress controller itself is raw-applied on kind (kubectl) / installed
+  separately via Helm on EKS — either way, it's cluster infrastructure, not
+  part of the application chart
+- On EKS, this AWS account is currently blocked from creating any Elastic Load
+  Balancer (account-level restriction, not a config issue) — ingress-nginx runs
+  as ClusterIP and is reached via `kubectl port-forward` for verification. In a
+  normal account, `controller.service.type=LoadBalancer` with the
+  `service.beta.kubernetes.io/aws-load-balancer-type: nlb` annotation is the
+  production pattern
