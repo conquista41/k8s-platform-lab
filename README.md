@@ -61,6 +61,16 @@
 ### Uninstalling
    helm uninstall hello-app -n lab-app
 
+## Provisioning AWS EKS with Terraform
+- State: S3 backend with native Terraform 1.10+ locking (`use_lockfile = true`), no DynamoDB table needed.
+- Module structure: separate `modules/vpc` and `modules/eks`, composed from a root `main.tf`.
+- Networking: 2 public + 2 private subnets across 2 AZs, worker nodes in private subnets, single NAT Gateway (cost trade-off — one NAT instead of per-AZ).
+- EKS managed node group (t3.medium x2) instead of self-managed nodes or Fargate.
+- NetworkPolicy enforcement via the VPC CNI's native support (`configuration_values = { enableNetworkPolicy = "true" }` on the `vpc-cni` addon) instead of installing Calico — but note the addon's config schema key is `enableNetworkPolicy` at the top level, **not** `env.ENABLE_NETWORK_POLICY` as older docs/examples suggest; also required pinning a recent `addon_version` since the account's default vpc-cni version predated the option entirely.
+- Infra/app split: Terraform provisions only infrastructure (VPC, EKS, node group, IAM, addons). `ingress-nginx` and the `hello-app` Helm chart are installed separately via `helm install`, same as on kind.
+- Hit an AWS account-level restriction blocking all Elastic Load Balancer creation (`OperationNotPermitted: This AWS account currently does not support creating load balancers`) — unrelated to Terraform/K8s config, needs an AWS Support case to lift. Worked around it for verification by setting the ingress-nginx Service to `ClusterIP` and using `kubectl port-forward` (tunnels through the EKS API server, not a direct network path — no LB required to validate the Ingress → Service → Pod chain).
+- EKS Console's "Resources" tab uses a separate authorization layer (Access Entries), independent of `kubectl`'s access (which works via the classic cluster-creator grant). Needed `aws eks update-cluster-config --access-config authenticationMode=API_AND_CONFIG_MAP` plus an explicit access entry + `AmazonEKSClusterAdminPolicy` association to unlock it. Also: the AWS root user is a different IAM principal from an IAM user for this purpose — console access must be granted to whichever identity is actually logged in.
+- Full stack verified end-to-end on real EKS infra: 2 nodes Ready, ingress-nginx + hello-app deployed via Helm, `curl -H "Host: hello-app.local"` returning 200 through the ingress controller.
 
 ## Notes
 - Host port 8080/8443 used instead of 80/443 — Docker Desktop on Windows/WSL2
@@ -71,3 +81,4 @@
   conflict with Helm's ownership of those resources
 - Ingress controller itself is still raw-applied (kubectl), not part of the
   Helm chart — it's cluster infrastructure, not application config
+
